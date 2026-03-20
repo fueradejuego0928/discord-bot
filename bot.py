@@ -57,12 +57,6 @@ def fetch_latest_data(ticker: str, period: str = "1y", interval: str = "1d"):
 
 
 def extract_close_series(df):
-    """
-    yfinance の返り値が
-    - 単純な columns
-    - MultiIndex columns
-    のどちらでも Close 系列を 1本の Series として返す
-    """
     if df.empty:
         raise ValueError("データが空です。")
 
@@ -114,19 +108,6 @@ def reset_alert_if_recovered(key: str, condition: bool):
         alert_state[key] = False
 
 
-def build_market_summary(drawdown_info: dict, vix_value: float, btc_price: float) -> str:
-    now_str = get_jst_now().strftime("%Y-%m-%d %H:%M JST")
-    return (
-        f"**マーケット監視レポート**\n"
-        f"- 時刻: {now_str}\n"
-        f"- S&P500: {drawdown_info['latest_close']:.2f}\n"
-        f"- 1年高値: {drawdown_info['rolling_high']:.2f}\n"
-        f"- 高値比: {drawdown_info['drawdown_pct']:.2f}%\n"
-        f"- VIX: {vix_value:.2f}\n"
-        f"- BTC: ${btc_price:,.0f}"
-    )
-
-
 def build_market_embed(
     title: str,
     description: str,
@@ -158,6 +139,7 @@ def build_market_embed(
         embed.add_field(name="候補ETF・銘柄", value=candidates, inline=False)
 
     return embed
+
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -209,17 +191,63 @@ async def market_check_loop():
         reset_alert_if_recovered("vix_30", cond_vix_30)
         reset_alert_if_recovered("vix_40", cond_vix_40)
 
-        # S&P500 下落アラート
+        if cond_vix_25 and not alert_state["vix_25"]:
+            alert_state["vix_25"] = True
+
+            embed = build_market_embed(
+                title="⚠️ VIX注意（監視強化）",
+                description="VIX が 25 を超えました。警戒感が高まっています。",
+                drawdown_info=drawdown_info,
+                vix_value=vix_value,
+                btc_price=btc_price,
+                color=0xF1C40F,
+                action="まだ本格買いはしない。S&P500 の下落率が -10% に届くか監視。",
+                candidates="監視対象: `VOO`, `VT`, `QQQM`, `IAU`",
+            )
+            await send_message(embed=embed)
+
+        if cond_vix_30 and not alert_state["vix_30"]:
+            alert_state["vix_30"] = True
+
+            embed = build_market_embed(
+                title="📈 VIX上昇（買い準備）",
+                description="VIX が 30 を超えました。相場不安が強まっています。",
+                drawdown_info=drawdown_info,
+                vix_value=vix_value,
+                btc_price=btc_price,
+                color=0xE67E22,
+                action="現金比率を確認。S&P500 が -10% / -20% に進む場合に備えて注文候補を整理。",
+                candidates="候補: `VOO`, `VT`, `QQQM`, `IAU`",
+            )
+            await send_message(embed=embed)
+
+        if cond_vix_40 and not alert_state["vix_40"]:
+            alert_state["vix_40"] = True
+
+            embed = build_market_embed(
+                title="🚨 VIX急騰（極端な恐怖）",
+                description="VIX が 40 を超えました。極端な恐怖局面です。",
+                drawdown_info=drawdown_info,
+                vix_value=vix_value,
+                btc_price=btc_price,
+                color=0xE74C3C,
+                action="あわてて飛びつかず、S&P500 の下落率と併せて分割買いを判断。",
+                candidates="候補: `VOO`, `VT`, `QQQM`, `SOXX`, `IAU`",
+            )
+            await send_message(embed=embed)
+
         if cond_sp500_10 and not alert_state["sp500_-10"]:
             alert_state["sp500_-10"] = True
 
             embed = build_market_embed(
                 title="⚠️ 第1警戒",
-                description="S&P500 が高値から -10% に到達しました。\n候補: `VOO` / `VT` を少量検討",
+                description="S&P500 が高値から -10% に到達しました。",
                 drawdown_info=drawdown_info,
                 vix_value=vix_value,
                 btc_price=btc_price,
                 color=0xF1C40F,
+                action="試し玉の段階。予定資金の20%までで分割開始。",
+                candidates="`VOO`, `VT`",
             )
             await send_message(embed=embed)
 
@@ -228,12 +256,13 @@ async def market_check_loop():
 
             embed = build_market_embed(
                 title="📉 第2警戒",
-                description="S&P500 が高値から -20% に到達しました。\n候補: `VOO` / `VT` / `QQQM` / 
-`IAU`",
+                description="S&P500 が高値から -20% に到達しました。",
                 drawdown_info=drawdown_info,
                 vix_value=vix_value,
                 btc_price=btc_price,
                 color=0xE67E22,
+                action="本格買いの段階。予定資金の40%を目安に投入。",
+                candidates="`VOO`, `VT`, `QQQM`, `IAU`",
             )
             await send_message(embed=embed)
 
@@ -242,63 +271,16 @@ async def market_check_loop():
 
             embed = build_market_embed(
                 title="🔥 第3警戒",
-                description="S&P500 が高値から -30% に到達しました。\n候補: `VOO` / `VT` / `QQQM` / 
-`SOXX` を厚めに検討",
+                description="S&P500 が高値から -30% に到達しました。",
                 drawdown_info=drawdown_info,
                 vix_value=vix_value,
                 btc_price=btc_price,
                 color=0xE74C3C,
+                action="最大チャンス帯。残り資金を分割で投入。",
+                candidates="`VOO`, `VT`, `QQQM`, `SOXX`",
             )
             await send_message(embed=embed)
 
-        # VIX アラート
-
-if cond_vix_25 and not alert_state["vix_25"]:
-    alert_state["vix_25"] = True
-
-    embed = build_market_embed(
-        title="⚠️ VIX注意（監視強化）",
-        description="VIX が 25 を超えました。警戒感が高まっています。",
-        drawdown_info=drawdown_info,
-        vix_value=vix_value,
-        btc_price=btc_price,
-        color=0xF1C40F,
-        action="まだ本格買いはしない。S&P500 の下落率が -10% に届くか監視。",
-        candidates="監視対象: `VOO`, `VT`, `QQQM`, `IAU`",
-    )
-    await send_message(embed=embed)
-
-if cond_vix_30 and not alert_state["vix_30"]:
-    alert_state["vix_30"] = True
-
-    embed = build_market_embed(
-        title="📈 VIX上昇（買い準備）",
-        description="VIX が 30 を超えました。相場不安が強まっています。",
-        drawdown_info=drawdown_info,
-        vix_value=vix_value,
-        btc_price=btc_price,
-        color=0xE67E22,
-        action="現金比率を確認。S&P500 が -10% / -20% に進む場合に備えて注文候補を整理。",
-        candidates="候補: `VOO`, `VT`, `QQQM`, `IAU`",
-    )
-    await send_message(embed=embed)
-
-if cond_vix_40 and not alert_state["vix_40"]:
-    alert_state["vix_40"] = True
-
-    embed = build_market_embed(
-        title="🚨 VIX急騰（極端な恐怖）",
-        description="VIX が 40 を超えました。極端な恐怖局面です。",
-        drawdown_info=drawdown_info,
-        vix_value=vix_value,
-        btc_price=btc_price,
-        color=0xE74C3C,
-        action="あわてて飛びつかず、S&P500 の下落率と併せて分割買いを判断。",
-        candidates="候補: `VOO`, `VT`, `QQQM`, `SOXX`, `IAU`",
-    )
-    await send_message(embed=embed)
-
-        # 複合シグナル
         cond_stage_1 = cond_sp500_10 and cond_vix_25
         cond_stage_2 = cond_sp500_20 and cond_vix_30
         cond_stage_3 = cond_sp500_30 and cond_vix_40
@@ -307,50 +289,50 @@ if cond_vix_40 and not alert_state["vix_40"]:
         reset_alert_if_recovered("stage_2", cond_stage_2)
         reset_alert_if_recovered("stage_3", cond_stage_3)
 
-if cond_stage_1 and not alert_state["stage_1"]:
-    alert_state["stage_1"] = True
+        if cond_stage_1 and not alert_state["stage_1"]:
+            alert_state["stage_1"] = True
 
-    embed = build_market_embed(
-        title="🟡 買いシグナル 第1段階",
-        description="条件: S&P500 -10% かつ VIX 25以上",
-        drawdown_info=drawdown_info,
-        vix_value=vix_value,
-        btc_price=btc_price,
-        color=0xF1C40F,
-        action="試し玉の段階。予定資金の20%までで分割開始。",
-        candidates="`VOO`, `VT`",
-    )
-    await send_message(embed=embed)
+            embed = build_market_embed(
+                title="🟡 買いシグナル 第1段階",
+                description="条件: S&P500 -10% かつ VIX 25以上",
+                drawdown_info=drawdown_info,
+                vix_value=vix_value,
+                btc_price=btc_price,
+                color=0xF1C40F,
+                action="試し玉の段階。予定資金の20%までで分割開始。",
+                candidates="`VOO`, `VT`",
+            )
+            await send_message(embed=embed)
 
-if cond_stage_2 and not alert_state["stage_2"]:
-    alert_state["stage_2"] = True
+        if cond_stage_2 and not alert_state["stage_2"]:
+            alert_state["stage_2"] = True
 
-    embed = build_market_embed(
-        title="🟠 買いシグナル 第2段階",
-        description="条件: S&P500 -20% かつ VIX 30以上",
-        drawdown_info=drawdown_info,
-        vix_value=vix_value,
-        btc_price=btc_price,
-        color=0xE67E22,
-        action="本格買いの段階。予定資金の40%を目安に投入。",
-        candidates="`VOO`, `VT`, `QQQM`, `IAU`",
-    )
-    await send_message(embed=embed)
+            embed = build_market_embed(
+                title="🟠 買いシグナル 第2段階",
+                description="条件: S&P500 -20% かつ VIX 30以上",
+                drawdown_info=drawdown_info,
+                vix_value=vix_value,
+                btc_price=btc_price,
+                color=0xE67E22,
+                action="本格買いの段階。予定資金の40%を目安に投入。",
+                candidates="`VOO`, `VT`, `QQQM`, `IAU`",
+            )
+            await send_message(embed=embed)
 
-if cond_stage_3 and not alert_state["stage_3"]:
-    alert_state["stage_3"] = True
+        if cond_stage_3 and not alert_state["stage_3"]:
+            alert_state["stage_3"] = True
 
-    embed = build_market_embed(
-        title="🔴 買いシグナル 第3段階",
-        description="条件: S&P500 -30% かつ VIX 40以上",
-        drawdown_info=drawdown_info,
-        vix_value=vix_value,
-        btc_price=btc_price,
-        color=0xE74C3C,
-        action="最大チャンス帯。残り資金を分割で投入。",
-        candidates="`VOO`, `VT`, `QQQM`, `SOXX`",
-    )
-    await send_message(embed=embed)
+            embed = build_market_embed(
+                title="🔴 買いシグナル 第3段階",
+                description="条件: S&P500 -30% かつ VIX 40以上",
+                drawdown_info=drawdown_info,
+                vix_value=vix_value,
+                btc_price=btc_price,
+                color=0xE74C3C,
+                action="最大チャンス帯。残り資金を分割で投入。",
+                candidates="`VOO`, `VT`, `QQQM`, `SOXX`",
+            )
+            await send_message(embed=embed)
 
     except Exception as e:
         print(f"market_check_loop error: {e}")
