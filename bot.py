@@ -24,6 +24,16 @@ BTC_TICKER = "BTC-USD"
 
 CHECK_INTERVAL_MINUTES = 15
 
+DAYTRADE_TICKERS = ["NVDA", "TSLA", "SOXL", "COIN"]
+
+BUY_PLAN = {
+    "stage_1": {"VOO": 20, "VT": 0, "QQQM": 0, "IAU": 0},
+    "stage_2": {"VOO": 20, "VT": 0, "QQQM": 10, "IAU": 10},
+    "stage_3": {"VOO": 20, "VT": 0, "QQQM": 10, "SOXX": 10},
+}
+
+# ▼ 資金配分ルール（ここに追加）
+
 alert_state = {
     "sp500_-10": False,
     "sp500_-20": False,
@@ -34,6 +44,10 @@ alert_state = {
     "stage_1": False,
     "stage_2": False,
     "stage_3": False,
+    "daytrade_NVDA": False,
+    "daytrade_TSLA": False,
+    "daytrade_SOXL": False,
+    "daytrade_COIN": False,
 }
 
 
@@ -102,6 +116,112 @@ def get_latest_btc() -> float:
     close_series = extract_close_series(df)
     return float(close_series.iloc[-1])
 
+def calculate_daytrade_change(ticker: str) -> dict:
+    df = fetch_latest_data(ticker, period="5d", interval="1d")
+    close_series = extract_close_series(df)
+
+    latest_close = float(close_series.iloc[-1])
+    prev_close = float(close_series.iloc[-2]) if len(close_series) > 1 else latest_close
+    change_pct = ((latest_close - prev_close) / prev_close) * 100.0
+
+    return {
+        "ticker": ticker,
+        "latest_close": latest_close,
+        "prev_close": prev_close,
+        "change_pct": change_pct,
+    }
+
+
+async def send_daytrade_alert(ticker_info: dict):
+    ticker = ticker_info["ticker"]
+    price = ticker_info["latest_close"]
+    change_pct = ticker_info["change_pct"]
+    key = f"daytrade_{ticker}"
+
+    condition = abs(change_pct) >= 3
+    reset_alert_if_recovered(key, condition)
+
+    if not condition or alert_state[key]:
+        return
+
+    alert_state[key] = True
+
+    title = f"📈 デイトレ監視: {ticker}"
+    description = f"{ticker} が前日比 {change_pct:.2f}% 動いています。"
+    color = 0x2ECC71 if change_pct > 0 else 0xE74C3C
+
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=color,
+        timestamp=get_jst_now(),
+    )
+    embed.add_field(name="現在値", value=f"{price:.2f}", inline=True)
+    embed.add_field(name="前日比", value=f"{change_pct:.2f}%", inline=True)
+    embed.add_field(name="今やること", value="チャート確認。飛びつかず、5分足と出来高を見る。", 
+inline=False)
+
+    await send_message(embed=embed)
+
+def format_buy_plan(plan: dict) -> str:
+    lines = []
+    for ticker, weight in plan.items():
+        if weight > 0:
+            lines.append(f"- {ticker}: {weight}%")
+    return "\n".join(lines)
+
+def get_latest_price(ticker: str) -> float:
+    df = fetch_latest_data(ticker, period="5d", interval="1h")
+    close_series = extract_close_series(df)
+    return float(close_series.iloc[-1])
+
+
+def calculate_daytrade_change(ticker: str) -> dict:
+    df = fetch_latest_data(ticker, period="5d", interval="1d")
+    close_series = extract_close_series(df)
+
+    latest_close = float(close_series.iloc[-1])
+    prev_close = float(close_series.iloc[-2]) if len(close_series) > 1 else latest_close
+    change_pct = ((latest_close - prev_close) / prev_close) * 100.0
+
+    return {
+        "ticker": ticker,
+        "latest_close": latest_close,
+        "prev_close": prev_close,
+        "change_pct": change_pct,
+    }
+
+async def send_daytrade_alert(ticker_info: dict):
+    ticker = ticker_info["ticker"]
+    price = ticker_info["latest_close"]
+    change_pct = ticker_info["change_pct"]
+    key = f"daytrade_{ticker}"
+
+    condition = abs(change_pct) >= 3
+    reset_alert_if_recovered(key, condition)
+
+    if not condition or alert_state[key]:
+        return
+
+    alert_state[key] = True
+
+    title = f"📈 デイトレ監視: {ticker}"
+    description = f"{ticker} が前日比 {change_pct:.2f}% 動いています。"
+
+    color = 0x2ECC71 if change_pct > 0 else 0xE74C3C
+
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=color,
+        timestamp=get_jst_now(),
+    )
+    embed.add_field(name="現在値", value=f"{price:.2f}", inline=True)
+    embed.add_field(name="前日比", value=f"{change_pct:.2f}%", inline=True)
+    embed.add_field(name="今やること", value="チャート確認。飛びつかず、5分足と出来高を見る。", 
+inline=False)
+
+    await send_message(embed=embed)
 
 def reset_alert_if_recovered(key: str, condition: bool):
     if not condition:
@@ -158,10 +278,10 @@ async def send_message(message: str = None, embed: discord.Embed = None):
     elif message is not None:
         await channel.send(message)
 
-
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
+
     if not market_check_loop.is_running():
         market_check_loop.start()
 
@@ -238,8 +358,10 @@ async def market_check_loop():
 
         if cond_sp500_10 and not alert_state["sp500_-10"]:
             alert_state["sp500_-10"] = True
+            
+        plan_text = format_buy_plan(BUY_PLAN["stage_1"])
 
-            embed = build_market_embed(
+        embed = build_market_embed(
                 title="⚠️ 第1警戒",
                 description="S&P500 が高値から -10% に到達しました。",
                 drawdown_info=drawdown_info,
@@ -247,9 +369,9 @@ async def market_check_loop():
                 btc_price=btc_price,
                 color=0xF1C40F,
                 action="試し玉の段階。予定資金の20%までで分割開始。",
-                candidates="`VOO`, `VT`",
+                candidates=plan_text,
             )
-            await send_message(embed=embed)
+        await send_message(embed=embed)
 
         if cond_sp500_20 and not alert_state["sp500_-20"]:
             alert_state["sp500_-20"] = True
@@ -333,6 +455,13 @@ async def market_check_loop():
                 candidates="`VOO`, `VT`, `QQQM`, `SOXX`",
             )
             await send_message(embed=embed)
+
+        for ticker in DAYTRADE_TICKERS:
+            try:
+                ticker_info = calculate_daytrade_change(ticker)
+                await send_daytrade_alert(ticker_info)
+            except Exception as e:
+                print(f"daytrade alert error ({ticker}): {e}")
 
     except Exception as e:
         print(f"market_check_loop error: {e}")
